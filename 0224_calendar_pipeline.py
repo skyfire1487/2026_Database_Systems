@@ -43,12 +43,16 @@ def parse_twse_date(s):
     # 去除前後空白
     s = s.strip()
 
-    # 沒有 / 的一定不是日期
-    if "/" not in s:
+    # 支援兩種格式：YYYY/MM/DD 或 YYYY-MM-DD
+    if "/" in s:
+        sep = "/"
+    elif "-" in s:
+        sep = "-"
+    else:
         return None
 
-    # 必須剛好是 YYYY/MM/DD
-    parts = s.split("/")
+    # 必須剛好是 YYYY/MM/DD 或 YYYY-MM-DD
+    parts = s.split(sep)
     if len(parts) != 3:
         return None
 
@@ -100,12 +104,31 @@ def crawl_calendar(target_year):
 
     # 呼叫 TWSE 官方行事曆 API
     print("[CALENDAR] 呼叫官方 API")
-    res = requests.get(
+    
+    # 嘗試用 POST 方式指定年份
+    res = requests.post(
         "https://www.twse.com.tw/holidaySchedule/holidaySchedule",
-        params={"response": "json"},
+        data={"response": "json", "queryYear": target_year},
         timeout=30
     )
+    
+    # 如果 POST 不行，改用 GET 加年份在 URL 中
+    if res.status_code != 200 or not res.json().get("data"):
+        print("[CALENDAR] POST 失敗，改用 GET")
+        res = requests.get(
+            "https://www.twse.com.tw/holidaySchedule/holidaySchedule",
+            params={"response": "json", "year": target_year},
+            timeout=30
+        )
+    
     data = res.json()
+    
+    # DEBUG：看看 API 返回了什麼
+    print(f"[DEBUG] API 返回的 keys: {data.keys()}")
+    print(f"[DEBUG] queryYear: {data.get('queryYear')}")
+    print(f"[DEBUG] data.get('data') 的長度: {len(data.get('data', []))}")
+    if data.get("data"):
+        print(f"[DEBUG] 第一筆資料: {data.get('data')[0]}")
 
     # 收集指定年份的假日
     holiday_dict = {}
@@ -113,7 +136,11 @@ def crawl_calendar(target_year):
     for r in data.get("data", []):
         dt = parse_twse_date(r[0])
         if dt and dt.year == target_year:
-            holiday_dict[dt] = r[1] if len(r) > 1 else ""
+            holiday_name = r[1] if len(r) > 1 else ""
+            holiday_dict[dt] = holiday_name
+            # DEBUG：看看有沒有抓到假日名稱
+            if holiday_name:
+                print(f"  {dt}: {holiday_name}")
 
     print(f"[CALENDAR] 假日 {len(holiday_dict)} 筆")
 
@@ -138,16 +165,35 @@ def crawl_calendar(target_year):
             day_of_stock = -1
             other = ""
 
-            # 假日
+            # # 假日
+            # if dt in holiday_dict:
+            #     other = holiday_dict[dt]
+            # # 週末
+            # elif weekday in (5, 6):
+            #     pass
+            # # 平日交易日
+            # else:
+            #     work_day += 1
+            #     day_of_stock = work_day
             if dt in holiday_dict:
                 other = holiday_dict[dt]
-            # 週末
+
+                # ✅ 關鍵修正：有些“特殊日”其實是交易日（不是休市日）
+                # 例如：國曆新年開始交易日、農曆春節前最後交易日、農曆春節後開始交易日
+                if ("開始交易" in other) or ("最後交易" in other):
+                    work_day += 1
+                    day_of_stock = work_day
+                else:
+                    # 其餘才是休市日，維持 day_of_stock=-1
+                    pass
             elif weekday in (5, 6):
                 pass
-            # 平日交易日
             else:
                 work_day += 1
                 day_of_stock = work_day
+
+
+
 
             # 寫入 calendar
             cursor.execute(
@@ -202,12 +248,16 @@ def crawl_stock_list():
 
             cursor.execute("""
                 IF NOT EXISTS (SELECT 1 FROM stock_list WHERE stock_code=%s)
-                INSERT INTO stock_list
-                (stock_code, name, type, category, isTaiwan50)
-                VALUES (%s,%s,%s,%s,0)
+                BEGIN
+                    INSERT INTO stock_list
+                    (stock_code, name, type, category, isTaiwan50)
+                    VALUES (%s,%s,%s,%s,0)
+                END
             """, (code, code, name, "上市", category))
 
-            count += cursor.rowcount
+            # 正確計數：檢查是否有插入
+            if cursor.rowcount > 0:
+                count += 1
 
     conn.commit()
     conn.close()
@@ -237,7 +287,7 @@ def crawl_stock_data():
         "https://www.twse.com.tw/exchangeReport/STOCK_DAY",
         params={
             "response": "json",
-            "date": "20240101",
+            "date": "20260101",
             "stockNo": "2330"
         },
         timeout=30
@@ -265,11 +315,11 @@ def crawl_stock_data():
         trade_date,                              # VALUES %s (date)
         int(r[1].replace(",", "")),              # tv
         int(r[2].replace(",", "")),              # t
-        float(r[3]),                             # o
-        float(r[4]),                             # h
-        float(r[5]),                             # l
-        float(r[6]),                             # c
-        float(r[7]),                             # d ← ★你之前少的就是這個
+        float(r[3].replace(",", "")),            # o ← 改這裡
+        float(r[4].replace(",", "")),            # h ← 改這裡
+        float(r[5].replace(",", "")),            # l ← 改這裡
+        float(r[6].replace(",", "")),            # c ← 改這裡
+        float(r[7].replace(",", "")),            # d ← 改這裡
         int(r[8].replace(",", ""))               # v
         ))
 
@@ -287,12 +337,12 @@ def crawl_stock_data():
 # 主程式（控制是否重跑）
 # ===============================
 if __name__ == "__main__":
-    RUN_CALENDAR   = False
+    RUN_CALENDAR   = True
     RUN_STOCK_LIST = False
-    RUN_STOCK_DATA = True
+    RUN_STOCK_DATA = False
 
     if RUN_CALENDAR:
-        crawl_calendar(2025)
+        crawl_calendar(2026)
 
     if RUN_STOCK_LIST:
         crawl_stock_list()
