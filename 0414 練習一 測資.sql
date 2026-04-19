@@ -1,0 +1,1 @@
+EXEC dbo.sp_CalculateTrend '2330', 'MA20', 8, 6;

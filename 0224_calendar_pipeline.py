@@ -338,8 +338,8 @@ def crawl_stock_data():
 # ===============================
 if __name__ == "__main__":
     RUN_CALENDAR   = True
-    RUN_STOCK_LIST = False
-    RUN_STOCK_DATA = False
+    RUN_STOCK_LIST = True
+    RUN_STOCK_DATA = True
 
     if RUN_CALENDAR:
         crawl_calendar(2026)
